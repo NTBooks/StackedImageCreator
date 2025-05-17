@@ -13,12 +13,20 @@
     <div class="container">
         <div class="controls">
             {{#each layers}}
+            {{#unless (contains this.name "-AND")}}
             <div class="layer-control">
-                <label for="layer-{{this.level}}">{{this.name}}</label>
+                <label for="layer-{{this.level}}">
+                    {{#if (contains this.name "-XOR")}}
+                    {{this.name}} (Mask Next Layer)
+                    {{else}}
+                    {{this.name}}
+                    {{/if}}
+                </label>
                 <input type="range" id="layer-{{this.level}}" min="0" max="{{subtract this.images.length 1}}" value="0"
                     class="layer-slider" data-layer="{{this.level}}">
                 <span class="layer-value">1</span>
             </div>
+            {{/unless}}
             {{/each}}
             <button id="downloadBtn" class="download-btn">Download Image</button>
             <div class="muted-text" style="color: #888; font-size: 13px; margin-top: 10px;">

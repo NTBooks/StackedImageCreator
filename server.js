@@ -5,15 +5,18 @@ const path = require('path');
 const sharp = require('sharp');
 const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
+require('dotenv').config();
 
 const app = express();
 const port = 3000;
+const COLLECTION = process.env.COLLECTION || 'default_collection';
 
 // Set up Handlebars
 const hbs = exphbs.create({
     helpers: {
         subtract: (a, b) => a - b,
-        json: (context) => JSON.stringify(context).replace(/</g, '\u003c')
+        json: (context) => JSON.stringify(context).replace(/</g, '\u003c'),
+        contains: (str, substr) => typeof str === 'string' && str.includes(substr)
     },
     partialsDir: path.join(__dirname, 'views', 'partials')
 });
@@ -22,18 +25,22 @@ app.set('view engine', 'handlebars');
 
 // Serve static files
 app.use(express.static('public'));
-app.use('/assets', express.static('assets'));
+app.use('/assets', express.static(path.join('assets', "")));
 
 // Function to get layer information
 const getLayers = async () => {
-    const files = await fs.readdir('assets');
+    const assetsPath = path.join('assets', COLLECTION);
+    const files = await fs.readdir(assetsPath);
     const layers = {};
 
     files.forEach(file => {
         if (file.endsWith('.png')) {
             const match = file.match(/L(\d+)_([^_]+)_(\d+)\.png/);
             if (match) {
-                const [, level, name, number] = match;
+                let [, level, name, number] = match;
+                level = level.trim();
+                name = name.trim();
+                number = number.trim();
                 if (!layers[level]) {
                     layers[level] = {
                         level: parseInt(level),
@@ -43,14 +50,61 @@ const getLayers = async () => {
                 }
                 layers[level].images.push({
                     number: parseInt(number),
-                    path: `/assets/${file}`
+                    path: `/assets/${COLLECTION}/L${level}_${name}_${number}.png`
                 });
             }
         }
     });
-
+    // Sort images in each layer by number
+    Object.values(layers).forEach(layer => {
+        layer.images.sort((a, b) => a.number - b.number);
+    });
     return Object.values(layers).sort((a, b) => a.level - b.level);
 };
+
+// Utility function for XOR compositing
+async function compositeLayersWithXOR(layers, imagesToComposite) {
+    let base = imagesToComposite[0];
+    let overlays = [];
+    let i = 1;
+    while (i < imagesToComposite.length) {
+        const currentLayer = layers[i];
+        const prevLayer = layers[i - 1];
+        if (prevLayer && prevLayer.name.endsWith('-XOR')) {
+            // Apply mask: prevLayer is the mask, currentLayer is the image to mask
+            const maskPath = imagesToComposite[i - 1];
+            const imagePath = imagesToComposite[i];
+            const [imageBuffer, maskBuffer] = await Promise.all([
+                require('fs').promises.readFile(imagePath),
+                require('fs').promises.readFile(maskPath)
+            ]);
+            const maskedBuffer = await sharp(imageBuffer)
+                .joinChannel(
+                    await sharp(maskBuffer).ensureAlpha().extractChannel('alpha').toBuffer()
+                )
+                .png()
+                .toBuffer();
+            overlays.push({ input: maskedBuffer });
+
+            // Check for a matching -AND layer (same root name, same index)
+            const xorRoot = prevLayer.name.replace('-XOR', '');
+            const andLayer = layers.find(l => l.name === xorRoot + '-AND');
+            if (andLayer) {
+                // Use the index of the XOR mask (prevLayer) in its images array
+                const xorIdx = prevLayer.images.findIndex(imgObj => path.basename(maskPath).includes(`_${imgObj.number}.png`));
+                if (xorIdx !== -1 && andLayer.images[xorIdx]) {
+                    const andPath = path.join(__dirname, 'assets', `${process.env.COLLECTION || 'default_collection'}/L${andLayer.level}_${andLayer.name}_${xorIdx + 1}.png`);
+                    overlays.push({ input: andPath });
+                }
+            }
+            i += 2;
+        } else {
+            overlays.push({ input: imagesToComposite[i] });
+            i += 1;
+        }
+    }
+    return sharp(base).composite(overlays).png().toBuffer();
+}
 
 // Main route
 app.get('/', async (req, res) => {
@@ -98,41 +152,13 @@ app.get('/api/composite-image', async (req, res) => {
             const idxStr = selections[layer.name.toLowerCase()];
             const idxNum = typeof idxStr !== 'undefined' ? parseInt(idxStr, 10) : undefined;
             if (typeof idxNum === 'number' && !isNaN(idxNum) && layer.images[idxNum]) {
-                imagesToComposite.push(path.join(__dirname, 'assets', `L${layer.level}_${layer.name}_${idxNum + 1}.png`));
+                imagesToComposite.push(path.join(__dirname, 'assets', `${COLLECTION}/L${layer.level}_${layer.name}_${idxNum + 1}.png`));
             } else {
                 // fallback to first image if not specified or invalid
-                imagesToComposite.push(path.join(__dirname, 'assets', `L${layer.level}_${layer.name}_1.png`));
+                imagesToComposite.push(path.join(__dirname, 'assets', `${COLLECTION}/L${layer.level}_${layer.name}_1.png`));
             }
         }
-        // XOR masking logic
-        let base = imagesToComposite[0];
-        let overlays = [];
-        let i = 1;
-        while (i < imagesToComposite.length) {
-            const currentLayer = layers[i];
-            const prevLayer = layers[i - 1];
-            if (prevLayer && prevLayer.name.endsWith('_XOR')) {
-                // Apply mask: prevLayer is the mask, currentLayer is the image to mask
-                const maskPath = imagesToComposite[i - 1];
-                const imagePath = imagesToComposite[i];
-                const [imageBuffer, maskBuffer] = await Promise.all([
-                    require('fs').promises.readFile(imagePath),
-                    require('fs').promises.readFile(maskPath)
-                ]);
-                const maskedBuffer = await sharp(imageBuffer)
-                    .joinChannel(
-                        await sharp(maskBuffer).ensureAlpha().extractChannel('alpha').toBuffer()
-                    )
-                    .png()
-                    .toBuffer();
-                overlays.push({ input: maskedBuffer });
-                i += 2;
-            } else {
-                overlays.push({ input: imagesToComposite[i] });
-                i += 1;
-            }
-        }
-        const buffer = await sharp(base).composite(overlays).png().toBuffer();
+        const buffer = await compositeLayersWithXOR(layers, imagesToComposite);
         res.set('Content-Type', 'image/png');
         res.send(buffer);
     } catch (error) {
@@ -155,37 +181,9 @@ app.get('/api/random-image/:uuid', async (req, res) => {
             hashIdx += 2;
             const num = parseInt(hex, 16);
             const idx = num % layer.images.length;
-            imagesToComposite.push(path.join(__dirname, 'assets', `L${layer.level}_${layer.name}_${idx + 1}.png`));
+            imagesToComposite.push(path.join(__dirname, 'assets', `${COLLECTION}/L${layer.level}_${layer.name}_${idx + 1}.png`));
         }
-        // XOR masking logic
-        let base = imagesToComposite[0];
-        let overlays = [];
-        let i = 1;
-        while (i < imagesToComposite.length) {
-            const currentLayer = layers[i];
-            const prevLayer = layers[i - 1];
-            if (prevLayer && prevLayer.name.endsWith('_XOR')) {
-                // Apply mask: prevLayer is the mask, currentLayer is the image to mask
-                const maskPath = imagesToComposite[i - 1];
-                const imagePath = imagesToComposite[i];
-                const [imageBuffer, maskBuffer] = await Promise.all([
-                    require('fs').promises.readFile(imagePath),
-                    require('fs').promises.readFile(maskPath)
-                ]);
-                const maskedBuffer = await sharp(imageBuffer)
-                    .joinChannel(
-                        await sharp(maskBuffer).ensureAlpha().extractChannel('alpha').toBuffer()
-                    )
-                    .png()
-                    .toBuffer();
-                overlays.push({ input: maskedBuffer });
-                i += 2;
-            } else {
-                overlays.push({ input: imagesToComposite[i] });
-                i += 1;
-            }
-        }
-        const buffer = await sharp(base).composite(overlays).png().toBuffer();
+        const buffer = await compositeLayersWithXOR(layers, imagesToComposite);
         res.set('Content-Type', 'image/png');
         res.send(buffer);
     } catch (error) {
