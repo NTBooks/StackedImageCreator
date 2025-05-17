@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Layered Image Creator</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="controls">
+            {{#each layers}}
+            <div class="layer-control">
+                <label for="layer-{{this.level}}">{{this.name}}</label>
+                <input type="range" id="layer-{{this.level}}" min="0" max="{{subtract this.images.length 1}}" value="0"
+                    class="layer-slider" data-layer="{{this.level}}">
+                <span class="layer-value">1</span>
+            </div>
+            {{/each}}
+            <button id="downloadBtn" class="download-btn">Download Image</button>
+            <div class="muted-text" style="color: #888; font-size: 13px; margin-top: 10px;">
+                Max unique combinations: {{maxCombinations}}
+            </div>
+            <div style="margin-top: 20px;">
+                <button onclick="window.open('/api/groups', '_blank')" class="test-btn">Test GET /api/groups</button>
+                <button onclick="testCompositeImage()" class="test-btn">Test POST /api/composite-image</button>
+                <button onclick="testRandomImage()" class="test-btn">Test GET /api/random-image</button>
+            </div>
+        </div>
+        <div class="canvas-container">
+            <canvas id="imageCanvas"></canvas>
+        </div>
+    </div>
+    {{!-- prettier-ignore --}}
+    <script>
+        window.layerData =
+            {{> layerDataPartial }}
+        ;
+    </script>
+    <script src="/script.js"></script>
+    <script>
+        function testCompositeImage() {
+            const data = { "BG": 2, "Mouth": 3, "Eyes": 1 };
+            const params = new URLSearchParams(data).toString();
+            const url = '/api/composite-image?' + params;
+            window.open(url, '_blank');
+        }
+        function testRandomImage() {
+            const uuid = '123e4567-e89b-12d3-a456-426614174000';
+            const url = '/api/random-image/' + uuid;
+            window.open(url, '_blank');
+        }
+    </script>
+</body>
+
+</html>

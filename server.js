@@ -1,0 +1,198 @@
+const express = require('express');
+const exphbs = require('express-handlebars');
+const fs = require('fs').promises;
+const path = require('path');
+const sharp = require('sharp');
+const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
+
+const app = express();
+const port = 3000;
+
+// Set up Handlebars
+const hbs = exphbs.create({
+    helpers: {
+        subtract: (a, b) => a - b,
+        json: (context) => JSON.stringify(context).replace(/</g, '\u003c')
+    },
+    partialsDir: path.join(__dirname, 'views', 'partials')
+});
+app.engine('handlebars', hbs.engine);
+app.set('view engine', 'handlebars');
+
+// Serve static files
+app.use(express.static('public'));
+app.use('/assets', express.static('assets'));
+
+// Function to get layer information
+const getLayers = async () => {
+    const files = await fs.readdir('assets');
+    const layers = {};
+
+    files.forEach(file => {
+        if (file.endsWith('.png')) {
+            const match = file.match(/L(\d+)_([^_]+)_(\d+)\.png/);
+            if (match) {
+                const [, level, name, number] = match;
+                if (!layers[level]) {
+                    layers[level] = {
+                        level: parseInt(level),
+                        name: name,
+                        images: []
+                    };
+                }
+                layers[level].images.push({
+                    number: parseInt(number),
+                    path: `/assets/${file}`
+                });
+            }
+        }
+    });
+
+    return Object.values(layers).sort((a, b) => a.level - b.level);
+};
+
+// Main route
+app.get('/', async (req, res) => {
+    try {
+        const layers = await getLayers();
+        // Calculate max combinations
+        const maxCombinations = layers.reduce((acc, layer) => acc * layer.images.length, 1);
+        res.render('index', {
+            layout: false,
+            layers: layers,
+            maxCombinations: maxCombinations
+        });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).send('Error loading layers');
+    }
+});
+
+// API: List all groups and item counts
+app.get('/api/groups', async (req, res) => {
+    try {
+        const layers = await getLayers();
+        const groups = layers.map(layer => ({
+            name: layer.name,
+            count: layer.images.length
+        }));
+        res.json({ status: 'success', groups });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: 'Failed to get groups' });
+    }
+});
+
+// API: Composite image from query string { groupname: number, ... }
+app.get('/api/composite-image', async (req, res) => {
+    try {
+        const layers = await getLayers();
+        // Create a case-insensitive map of query params
+        const selections = {};
+        for (const key in req.query) {
+            selections[key.toLowerCase()] = req.query[key];
+        }
+        const imagesToComposite = [];
+        for (const layer of layers) {
+            // Find matching param (case-insensitive)
+            const idxStr = selections[layer.name.toLowerCase()];
+            const idxNum = typeof idxStr !== 'undefined' ? parseInt(idxStr, 10) : undefined;
+            if (typeof idxNum === 'number' && !isNaN(idxNum) && layer.images[idxNum]) {
+                imagesToComposite.push(path.join(__dirname, 'assets', `L${layer.level}_${layer.name}_${idxNum + 1}.png`));
+            } else {
+                // fallback to first image if not specified or invalid
+                imagesToComposite.push(path.join(__dirname, 'assets', `L${layer.level}_${layer.name}_1.png`));
+            }
+        }
+        // XOR masking logic
+        let base = imagesToComposite[0];
+        let overlays = [];
+        let i = 1;
+        while (i < imagesToComposite.length) {
+            const currentLayer = layers[i];
+            const prevLayer = layers[i - 1];
+            if (prevLayer && prevLayer.name.endsWith('_XOR')) {
+                // Apply mask: prevLayer is the mask, currentLayer is the image to mask
+                const maskPath = imagesToComposite[i - 1];
+                const imagePath = imagesToComposite[i];
+                const [imageBuffer, maskBuffer] = await Promise.all([
+                    require('fs').promises.readFile(imagePath),
+                    require('fs').promises.readFile(maskPath)
+                ]);
+                const maskedBuffer = await sharp(imageBuffer)
+                    .joinChannel(
+                        await sharp(maskBuffer).ensureAlpha().extractChannel('alpha').toBuffer()
+                    )
+                    .png()
+                    .toBuffer();
+                overlays.push({ input: maskedBuffer });
+                i += 2;
+            } else {
+                overlays.push({ input: imagesToComposite[i] });
+                i += 1;
+            }
+        }
+        const buffer = await sharp(base).composite(overlays).png().toBuffer();
+        res.set('Content-Type', 'image/png');
+        res.send(buffer);
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: 'Failed to generate image' });
+    }
+});
+
+// API: Generate random image from uuid
+app.get('/api/random-image/:uuid', async (req, res) => {
+    try {
+        const { uuid } = req.params;
+        const layers = await getLayers();
+        // Hash the uuid to a deterministic random seed
+        const hash = require('crypto').createHash('sha256').update(uuid).digest('hex');
+        let hashIdx = 0;
+        const imagesToComposite = [];
+        for (const layer of layers) {
+            // Use two hex chars per layer for more randomness
+            const hex = hash.substr(hashIdx, 2);
+            hashIdx += 2;
+            const num = parseInt(hex, 16);
+            const idx = num % layer.images.length;
+            imagesToComposite.push(path.join(__dirname, 'assets', `L${layer.level}_${layer.name}_${idx + 1}.png`));
+        }
+        // XOR masking logic
+        let base = imagesToComposite[0];
+        let overlays = [];
+        let i = 1;
+        while (i < imagesToComposite.length) {
+            const currentLayer = layers[i];
+            const prevLayer = layers[i - 1];
+            if (prevLayer && prevLayer.name.endsWith('_XOR')) {
+                // Apply mask: prevLayer is the mask, currentLayer is the image to mask
+                const maskPath = imagesToComposite[i - 1];
+                const imagePath = imagesToComposite[i];
+                const [imageBuffer, maskBuffer] = await Promise.all([
+                    require('fs').promises.readFile(imagePath),
+                    require('fs').promises.readFile(maskPath)
+                ]);
+                const maskedBuffer = await sharp(imageBuffer)
+                    .joinChannel(
+                        await sharp(maskBuffer).ensureAlpha().extractChannel('alpha').toBuffer()
+                    )
+                    .png()
+                    .toBuffer();
+                overlays.push({ input: maskedBuffer });
+                i += 2;
+            } else {
+                overlays.push({ input: imagesToComposite[i] });
+                i += 1;
+            }
+        }
+        const buffer = await sharp(base).composite(overlays).png().toBuffer();
+        res.set('Content-Type', 'image/png');
+        res.send(buffer);
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: 'Failed to generate random image' });
+    }
+});
+
+app.listen(port, () => {
+    console.log(`Server running at http://localhost:${port}`);
+}); 
