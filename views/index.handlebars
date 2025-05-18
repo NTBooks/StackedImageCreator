@@ -28,13 +28,19 @@
             </div>
             {{/unless}}
             {{/each}}
+            <div class="engraving-control" style="margin-bottom: 16px;">
+                <label for="engravingInput" style="font-size: 14px; color: #666;">Engraving (max 20 chars):</label>
+                <input type="text" id="engravingInput" maxlength="20"
+                    style="width: 100%; font-family: monospace; font-size: 16px; margin-top: 4px;"
+                    placeholder="Enter engraving...">
+            </div>
             <button id="downloadBtn" class="download-btn">Download Image</button>
             <div class="muted-text" style="color: #888; font-size: 13px; margin-top: 10px;">
                 Max unique combinations: {{maxCombinations}}
             </div>
             <div style="margin-top: 20px;">
                 <button onclick="window.open('/api/groups', '_blank')" class="test-btn">Test GET /api/groups</button>
-                <button onclick="testCompositeImage()" class="test-btn">Test POST /api/composite-image</button>
+                <button onclick="testCompositeImage()" class="test-btn">Test GET /api/composite-image</button>
                 <button onclick="testRandomImage()" class="test-btn">Test GET /api/random-image</button>
             </div>
         </div>
@@ -53,12 +59,12 @@
         function testCompositeImage() {
             const data = { "BG": 2, "Mouth": 3, "Eyes": 1 };
             const params = new URLSearchParams(data).toString();
-            const url = '/api/composite-image?' + params;
+            const url = '/api/composite-image?' + params + '&engraving=TEST%20EMBLEM';
             window.open(url, '_blank');
         }
         function testRandomImage() {
             const uuid = crypto.randomUUID();
-            const url = '/api/random-image/' + uuid;
+            const url = '/api/random-image/' + uuid + '?engraving=TEST%20EMBLEM';
             window.open(url, '_blank');
         }
     </script>

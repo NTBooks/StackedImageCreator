@@ -106,12 +106,44 @@ async function compositeLayersWithXOR(layers, imagesToComposite) {
     return sharp(base).composite(overlays).png().toBuffer();
 }
 
+// Utility to overlay engraving text using Sharp
+async function addEngravingToBuffer(buffer, engraving) {
+    if (!engraving) return buffer;
+    const text = engraving.slice(0, 20);
+    const width = 1080;
+    const height = 1080;
+    const boxWidth = Math.floor(width * 0.7);
+    const boxHeight = 70;
+    const boxX = Math.floor((width - boxWidth) / 2);
+    const boxY = height - boxHeight - 40;
+    // Create SVG overlay (centered, fixed-width, white text)
+    const svg = `
+    <svg width='${width}' height='${height}'>
+      <rect x='${boxX}' y='${boxY}' width='${boxWidth}' height='${boxHeight}' fill='black' fill-opacity='0.5'/>
+      <text
+        x='${width / 2}'
+        y='${boxY + boxHeight / 2}'
+        font-family='Menlo,Consolas,Monaco,Liberation Mono,Courier,monospace'
+        font-size='48'
+        fill='white'
+        text-anchor='middle'
+        dominant-baseline='middle'
+        font-weight='bold'
+      >${text}</text>
+    </svg>
+    `;
+    return await sharp(buffer)
+        .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+        .png()
+        .toBuffer();
+}
+
 // Main route
 app.get('/', async (req, res) => {
     try {
         const layers = await getLayers();
         // Calculate max combinations
-        const maxCombinations = layers.reduce((acc, layer) => acc * layer.images.length, 1);
+        const maxCombinations = layers.filter(layer => !layer.name.endsWith('-AND')).reduce((acc, layer) => acc * layer.images.length, 1);
         res.render('index', {
             layout: false,
             layers: layers,
@@ -158,7 +190,10 @@ app.get('/api/composite-image', async (req, res) => {
                 imagesToComposite.push(path.join(__dirname, 'assets', `${COLLECTION}/L${layer.level}_${layer.name}_1.png`));
             }
         }
-        const buffer = await compositeLayersWithXOR(layers, imagesToComposite);
+        let buffer = await compositeLayersWithXOR(layers, imagesToComposite);
+        if (req.query.engraving) {
+            buffer = await addEngravingToBuffer(buffer, req.query.engraving);
+        }
         res.set('Content-Type', 'image/png');
         res.send(buffer);
     } catch (error) {
@@ -183,7 +218,10 @@ app.get('/api/random-image/:uuid', async (req, res) => {
             const idx = num % layer.images.length;
             imagesToComposite.push(path.join(__dirname, 'assets', `${COLLECTION}/L${layer.level}_${layer.name}_${idx + 1}.png`));
         }
-        const buffer = await compositeLayersWithXOR(layers, imagesToComposite);
+        let buffer = await compositeLayersWithXOR(layers, imagesToComposite);
+        if (req.query.engraving) {
+            buffer = await addEngravingToBuffer(buffer, req.query.engraving);
+        }
         res.set('Content-Type', 'image/png');
         res.send(buffer);
     } catch (error) {

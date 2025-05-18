@@ -33,6 +33,32 @@ const loadImages = async () => {
     await Promise.all(imagePromises);
 };
 
+// Draw engraving overlay
+const drawEngraving = () => {
+    const engravingInput = document.getElementById('engravingInput');
+    if (!engravingInput) return;
+    const text = engravingInput.value.slice(0, 20);
+    if (!text) return;
+    // Box dimensions
+    const boxWidth = canvas.width * 0.7;
+    const boxHeight = 70;
+    const boxX = (canvas.width - boxWidth) / 2;
+    const boxY = canvas.height - boxHeight - 40;
+    // Draw semi-transparent black box
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+    ctx.globalAlpha = 1.0;
+    // Draw white fixed-width text
+    ctx.font = 'bold 48px monospace';
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, canvas.width / 2, boxY + boxHeight / 2);
+    ctx.restore();
+};
+
 // Draw all layers
 const drawLayers = () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -85,6 +111,7 @@ const drawLayers = () => {
             i += 1;
         }
     }
+    drawEngraving();
 };
 
 // Update layer value display
@@ -106,7 +133,14 @@ const init = async () => {
         });
     });
 
+    const engravingInput = document.getElementById('engravingInput');
+    if (engravingInput) {
+        engravingInput.addEventListener('input', drawLayers);
+    }
+
     downloadBtn.addEventListener('click', () => {
+        const engravingInput = document.getElementById('engravingInput');
+        const engraving = engravingInput ? engravingInput.value.slice(0, 20) : '';
         const link = document.createElement('a');
         link.download = 'layered-image.png';
         link.href = canvas.toDataURL('image/png');
