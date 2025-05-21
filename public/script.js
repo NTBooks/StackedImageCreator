@@ -148,5 +148,11 @@ const init = async () => {
     });
 };
 
+// Get collection from URL query parameter
+const getCollection = () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get('collection') || '';
+};
+
 // Start the application
 init(); 

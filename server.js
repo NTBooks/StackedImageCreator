@@ -9,27 +9,19 @@ require('dotenv').config();
 
 const app = express();
 const port = 3000;
-const COLLECTION = process.env.COLLECTION || 'default_collection';
+const DEFAULT_COLLECTION = process.env.COLLECTION || 'default_collection';
 
-// Set up Handlebars
-const hbs = exphbs.create({
-    helpers: {
-        subtract: (a, b) => a - b,
-        json: (context) => JSON.stringify(context).replace(/</g, '\u003c'),
-        contains: (str, substr) => typeof str === 'string' && str.includes(substr)
-    },
-    partialsDir: path.join(__dirname, 'views', 'partials')
-});
-app.engine('handlebars', hbs.engine);
-app.set('view engine', 'handlebars');
-
-// Serve static files
-app.use(express.static('public'));
-app.use('/assets', express.static(path.join('assets', "")));
+// Cache for layer data
+const layerCache = new Map();
 
 // Function to get layer information
-const getLayers = async () => {
-    const assetsPath = path.join('assets', COLLECTION);
+const getLayers = async (collection) => {
+    // Check cache first
+    if (layerCache.has(collection)) {
+        return layerCache.get(collection);
+    }
+
+    const assetsPath = path.join('assets', collection);
     const files = await fs.readdir(assetsPath);
     const layers = {};
 
@@ -50,7 +42,7 @@ const getLayers = async () => {
                 }
                 layers[level].images.push({
                     number: parseInt(number),
-                    path: `/assets/${COLLECTION}/L${level}_${name}_${number}.png`
+                    path: `/assets/${collection}/L${level}_${name}_${number}.png`
                 });
             }
         }
@@ -59,8 +51,52 @@ const getLayers = async () => {
     Object.values(layers).forEach(layer => {
         layer.images.sort((a, b) => a.number - b.number);
     });
-    return Object.values(layers).sort((a, b) => a.level - b.level);
+    const sortedLayers = Object.values(layers).sort((a, b) => a.level - b.level);
+
+    // Store in cache
+    layerCache.set(collection, sortedLayers);
+    return sortedLayers;
 };
+
+// Initialize cache with all collections
+const initializeCache = async () => {
+    try {
+        const assetsDir = path.join(__dirname, 'assets');
+        const collections = await fs.readdir(assetsDir);
+
+        // Load default collection first
+        if (collections.includes(DEFAULT_COLLECTION)) {
+            await getLayers(DEFAULT_COLLECTION);
+        }
+
+        // Load other collections
+        for (const collection of collections) {
+            if (collection !== DEFAULT_COLLECTION) {
+                await getLayers(collection);
+            }
+        }
+
+        console.log('Layer cache initialized with collections:', Array.from(layerCache.keys()));
+    } catch (error) {
+        console.error('Error initializing layer cache:', error);
+    }
+};
+
+// Set up Handlebars
+const hbs = exphbs.create({
+    helpers: {
+        subtract: (a, b) => a - b,
+        json: (context) => JSON.stringify(context).replace(/</g, '\u003c'),
+        contains: (str, substr) => typeof str === 'string' && str.includes(substr)
+    },
+    partialsDir: path.join(__dirname, 'views', 'partials')
+});
+app.engine('handlebars', hbs.engine);
+app.set('view engine', 'handlebars');
+
+// Serve static files
+app.use(express.static('public'));
+app.use('/assets', express.static(path.join('assets', "")));
 
 // Utility function for XOR compositing
 async function compositeLayersWithXOR(layers, imagesToComposite) {
@@ -93,7 +129,7 @@ async function compositeLayersWithXOR(layers, imagesToComposite) {
                 // Use the index of the XOR mask (prevLayer) in its images array
                 const xorIdx = prevLayer.images.findIndex(imgObj => path.basename(maskPath).includes(`_${imgObj.number}.png`));
                 if (xorIdx !== -1 && andLayer.images[xorIdx]) {
-                    const andPath = path.join(__dirname, 'assets', `${process.env.COLLECTION || 'default_collection'}/L${andLayer.level}_${andLayer.name}_${xorIdx + 1}.png`);
+                    const andPath = path.join(__dirname, 'assets', `${collection}/L${andLayer.level}_${andLayer.name}_${xorIdx + 1}.png`);
                     overlays.push({ input: andPath });
                 }
             }
@@ -141,13 +177,15 @@ async function addEngravingToBuffer(buffer, engraving) {
 // Main route
 app.get('/', async (req, res) => {
     try {
-        const layers = await getLayers();
+        const collection = req.query.collection || DEFAULT_COLLECTION;
+        const layers = await getLayers(collection);
         // Calculate max combinations
         const maxCombinations = layers.filter(layer => !layer.name.endsWith('-AND')).reduce((acc, layer) => acc * layer.images.length, 1);
         res.render('index', {
             layout: false,
             layers: layers,
-            maxCombinations: maxCombinations
+            maxCombinations: maxCombinations,
+            collection: collection
         });
     } catch (error) {
         console.error('Error:', error);
@@ -158,7 +196,8 @@ app.get('/', async (req, res) => {
 // API: List all groups and item counts
 app.get('/api/groups', async (req, res) => {
     try {
-        const layers = await getLayers();
+        const collection = req.query.collection || DEFAULT_COLLECTION;
+        const layers = await getLayers(collection);
         const groups = layers.map(layer => ({
             name: layer.name,
             count: layer.images.length
@@ -172,11 +211,14 @@ app.get('/api/groups', async (req, res) => {
 // API: Composite image from query string { groupname: number, ... }
 app.get('/api/composite-image', async (req, res) => {
     try {
-        const layers = await getLayers();
+        const collection = req.query.collection || DEFAULT_COLLECTION;
+        const layers = await getLayers(collection);
         // Create a case-insensitive map of query params
         const selections = {};
         for (const key in req.query) {
-            selections[key.toLowerCase()] = req.query[key];
+            if (key !== 'collection') {  // Skip collection parameter
+                selections[key.toLowerCase()] = req.query[key];
+            }
         }
         const imagesToComposite = [];
         for (const layer of layers) {
@@ -184,10 +226,10 @@ app.get('/api/composite-image', async (req, res) => {
             const idxStr = selections[layer.name.toLowerCase()];
             const idxNum = typeof idxStr !== 'undefined' ? parseInt(idxStr, 10) : undefined;
             if (typeof idxNum === 'number' && !isNaN(idxNum) && layer.images[idxNum]) {
-                imagesToComposite.push(path.join(__dirname, 'assets', `${COLLECTION}/L${layer.level}_${layer.name}_${idxNum + 1}.png`));
+                imagesToComposite.push(path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_${idxNum + 1}.png`));
             } else {
                 // fallback to first image if not specified or invalid
-                imagesToComposite.push(path.join(__dirname, 'assets', `${COLLECTION}/L${layer.level}_${layer.name}_1.png`));
+                imagesToComposite.push(path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_1.png`));
             }
         }
         let buffer = await compositeLayersWithXOR(layers, imagesToComposite);
@@ -205,7 +247,8 @@ app.get('/api/composite-image', async (req, res) => {
 app.get('/api/random-image/:uuid', async (req, res) => {
     try {
         const { uuid } = req.params;
-        const layers = await getLayers();
+        const collection = req.query.collection || DEFAULT_COLLECTION;
+        const layers = await getLayers(collection);
         // Hash the uuid to a deterministic random seed
         const hash = require('crypto').createHash('sha256').update(uuid).digest('hex');
         let hashIdx = 0;
@@ -216,7 +259,7 @@ app.get('/api/random-image/:uuid', async (req, res) => {
             hashIdx += 2;
             const num = parseInt(hex, 16);
             const idx = num % layer.images.length;
-            imagesToComposite.push(path.join(__dirname, 'assets', `${COLLECTION}/L${layer.level}_${layer.name}_${idx + 1}.png`));
+            imagesToComposite.push(path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_${idx + 1}.png`));
         }
         let buffer = await compositeLayersWithXOR(layers, imagesToComposite);
         if (req.query.engraving) {
@@ -229,6 +272,9 @@ app.get('/api/random-image/:uuid', async (req, res) => {
     }
 });
 
-app.listen(port, () => {
-    console.log(`Server running at http://localhost:${port}`);
+// Start the server after initializing cache
+initializeCache().then(() => {
+    app.listen(port, () => {
+        console.log(`Server running at http://localhost:${port}`);
+    });
 }); 

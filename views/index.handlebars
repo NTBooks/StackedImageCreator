@@ -59,12 +59,14 @@
         function testCompositeImage() {
             const data = { "BG": 2, "Mouth": 3, "Eyes": 1 };
             const params = new URLSearchParams(data).toString();
-            const url = '/api/composite-image?' + params + '&engraving=TEST%20EMBLEM';
+            const collection = new URLSearchParams(window.location.search).get('collection') || '';
+            const url = '/api/composite-image?' + params + '&engraving=TEST%20EMBLEM' + (collection ? '&collection=' + collection : '');
             window.open(url, '_blank');
         }
         function testRandomImage() {
             const uuid = crypto.randomUUID();
-            const url = '/api/random-image/' + uuid + '?engraving=TEST%20EMBLEM';
+            const collection = new URLSearchParams(window.location.search).get('collection') || '';
+            const url = '/api/random-image/' + uuid + '?engraving=TEST%20EMBLEM' + (collection ? '&collection=' + collection : '');
             window.open(url, '_blank');
         }
     </script>
