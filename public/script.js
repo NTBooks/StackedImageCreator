@@ -122,12 +122,7 @@ const drawLayers = async () => {
             continue; // skip -AND layers in main loop
         }
 
-        // Skip emblem layer if QR code is present
-        const qrcodeInput = document.getElementById('qrcodeInput');
-        if (layer.name === 'Emblem' && qrcodeInput && qrcodeInput.value) {
-            i += 1;
-            continue;
-        }
+
 
         const slider = document.getElementById(`layer-${layer.level}`);
         const value = parseInt(slider.value);
