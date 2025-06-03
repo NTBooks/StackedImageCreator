@@ -5,10 +5,11 @@ const path = require('path');
 const sharp = require('sharp');
 const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
+const QRCode = require('qrcode');
 require('dotenv').config();
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const DEFAULT_COLLECTION = process.env.COLLECTION || 'default_collection';
 
 // Cache for layer data
@@ -99,7 +100,7 @@ app.use(express.static('public'));
 app.use('/assets', express.static(path.join('assets', "")));
 
 // Utility function for XOR compositing
-async function compositeLayersWithXOR(layers, imagesToComposite) {
+async function compositeLayersWithXOR(layers, imagesToComposite, collection) {
     let base = imagesToComposite[0];
     let overlays = [];
     let i = 1;
@@ -174,6 +175,63 @@ async function addEngravingToBuffer(buffer, engraving) {
         .toBuffer();
 }
 
+// Utility to generate QR code and overlay it on the image
+async function addQRCodeToBuffer(buffer, url) {
+    if (!url) return buffer;
+
+    try {
+        // Generate QR code as SVG
+        const qrSvg = await QRCode.toString(url, {
+            type: 'svg',
+            margin: 1,
+            color: {
+                dark: '#000000',
+                light: '#00000000'
+            }
+        });
+
+        // Convert SVG to buffer
+        const qrBuffer = Buffer.from(qrSvg);
+
+        // Get image dimensions
+        const metadata = await sharp(buffer).metadata();
+        const width = metadata.width;
+        const height = metadata.height;
+
+        // Calculate QR code size (30% of the smaller dimension)
+        const qrSize = Math.min(width, height) * 0.3;
+
+        // Resize QR code
+        const resizedQR = await sharp(qrBuffer)
+            .resize(qrSize, qrSize)
+            .toBuffer();
+
+        // Calculate position to center the QR code
+        const left = Math.floor((width - qrSize) / 2);
+        const top = Math.floor((height - qrSize) / 2);
+
+        // Create SVG overlay for opacity
+        const svg = `
+        <svg width='${width}' height='${height}'>
+            <image x='${left}' y='${top}' width='${qrSize}' height='${qrSize}' href='data:image/png;base64,${resizedQR.toString('base64')}' opacity='0.5'/>
+        </svg>
+        `;
+
+        // Composite QR code onto image with opacity
+        return sharp(buffer)
+            .composite([{
+                input: Buffer.from(svg),
+                top: 0,
+                left: 0
+            }])
+            .png()
+            .toBuffer();
+    } catch (error) {
+        console.error('Error generating QR code:', error);
+        throw error;
+    }
+}
+
 // Main route
 app.get('/', async (req, res) => {
     try {
@@ -222,6 +280,10 @@ app.get('/api/composite-image', async (req, res) => {
         }
         const imagesToComposite = [];
         for (const layer of layers) {
+            // Skip emblem layer if QR code is provided
+            if (layer.name === 'Emblem' && req.query.qrcode) {
+                continue;
+            }
             // Find matching param (case-insensitive)
             const idxStr = selections[layer.name.toLowerCase()];
             const idxNum = typeof idxStr !== 'undefined' ? parseInt(idxStr, 10) : undefined;
@@ -232,13 +294,17 @@ app.get('/api/composite-image', async (req, res) => {
                 imagesToComposite.push(path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_1.png`));
             }
         }
-        let buffer = await compositeLayersWithXOR(layers, imagesToComposite);
+        let buffer = await compositeLayersWithXOR(layers, imagesToComposite, collection);
         if (req.query.engraving) {
             buffer = await addEngravingToBuffer(buffer, req.query.engraving);
+        }
+        if (req.query.qrcode) {
+            buffer = await addQRCodeToBuffer(buffer, req.query.qrcode);
         }
         res.set('Content-Type', 'image/png');
         res.send(buffer);
     } catch (error) {
+        console.error('Error generating composite image:', error);
         res.status(500).json({ status: 'error', message: 'Failed to generate image' });
     }
 });
@@ -261,7 +327,7 @@ app.get('/api/random-image/:uuid', async (req, res) => {
             const idx = num % layer.images.length;
             imagesToComposite.push(path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_${idx + 1}.png`));
         }
-        let buffer = await compositeLayersWithXOR(layers, imagesToComposite);
+        let buffer = await compositeLayersWithXOR(layers, imagesToComposite, collection);
         if (req.query.engraving) {
             buffer = await addEngravingToBuffer(buffer, req.query.engraving);
         }
@@ -269,6 +335,37 @@ app.get('/api/random-image/:uuid', async (req, res) => {
         res.send(buffer);
     } catch (error) {
         res.status(500).json({ status: 'error', message: 'Failed to generate random image' });
+    }
+});
+
+// API: Generate QR code
+app.get('/api/qrcode', async (req, res) => {
+    try {
+        const { url } = req.query;
+        if (!url) {
+            return res.status(400).json({ status: 'error', message: 'URL is required' });
+        }
+
+        // Generate QR code as SVG
+        const qrSvg = await QRCode.toString(url, {
+            type: 'svg',
+            margin: 1,
+            color: {
+                dark: '#000000',
+                light: '#00000000'
+            }
+        });
+
+        // Convert SVG to PNG buffer
+        const qrBuffer = await sharp(Buffer.from(qrSvg))
+            .png()
+            .toBuffer();
+
+        res.set('Content-Type', 'image/png');
+        res.send(qrBuffer);
+    } catch (error) {
+        console.error('Error generating QR code:', error);
+        res.status(500).json({ status: 'error', message: 'Failed to generate QR code' });
     }
 });
 

@@ -59,8 +59,58 @@ const drawEngraving = () => {
     ctx.restore();
 };
 
+// Draw QR code overlay
+const drawQRCode = async () => {
+    const qrcodeInput = document.getElementById('qrcodeInput');
+    if (!qrcodeInput || !qrcodeInput.value) return;
+
+    try {
+        // Get QR code from server
+        const response = await fetch(`/api/qrcode?url=${encodeURIComponent(qrcodeInput.value)}`);
+        if (!response.ok) {
+            throw new Error('Failed to generate QR code');
+        }
+
+        const blob = await response.blob();
+        const qrImage = new Image();
+        qrImage.src = URL.createObjectURL(blob);
+
+        // Wait for image to load
+        await new Promise((resolve) => {
+            qrImage.onload = resolve;
+        });
+
+        // Calculate QR code size (30% of the smaller dimension)
+        const qrSize = Math.min(canvas.width, canvas.height) * 0.3;
+
+        // Calculate position to center the QR code
+        const left = Math.floor((canvas.width - qrSize) / 2);
+        const top = Math.floor((canvas.height - qrSize) / 2);
+
+        // Save current context state
+        ctx.save();
+
+        // Set opacity to 50%
+        ctx.globalAlpha = 0.5;
+
+        // Disable image smoothing for pixel-perfect rendering
+        ctx.imageSmoothingEnabled = false;
+
+        // Draw QR code
+        ctx.drawImage(qrImage, left, top, qrSize, qrSize);
+
+        // Restore context state
+        ctx.restore();
+
+        // Clean up
+        URL.revokeObjectURL(qrImage.src);
+    } catch (error) {
+        console.error('Error drawing QR code:', error);
+    }
+};
+
 // Draw all layers
-const drawLayers = () => {
+const drawLayers = async () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     let i = 0;
 
@@ -71,13 +121,20 @@ const drawLayers = () => {
             i += 1;
             continue; // skip -AND layers in main loop
         }
+
+        // Skip emblem layer if QR code is present
+        const qrcodeInput = document.getElementById('qrcodeInput');
+        if (layer.name === 'Emblem' && qrcodeInput && qrcodeInput.value) {
+            i += 1;
+            continue;
+        }
+
         const slider = document.getElementById(`layer-${layer.level}`);
         const value = parseInt(slider.value);
         const img = loadedImages.get(`${layer.level}_${value}`);
 
         // Check if this is an XOR mask for the next layer
         if (layer.name.endsWith('-XOR') && i + 1 < window.layerData.length) {
-
             const nextLayer = window.layerData[i + 1];
             const nextSlider = document.getElementById(`layer-${nextLayer.level}`);
             const nextValue = parseInt(nextSlider.value);
@@ -111,7 +168,14 @@ const drawLayers = () => {
             i += 1;
         }
     }
-    drawEngraving();
+
+    // Draw QR code instead of emblem if present
+    const qrcodeInput = document.getElementById('qrcodeInput');
+    if (qrcodeInput && qrcodeInput.value) {
+        await drawQRCode();
+    } else {
+        drawEngraving();
+    }
 };
 
 // Update layer value display
@@ -135,16 +199,56 @@ const init = async () => {
 
     const engravingInput = document.getElementById('engravingInput');
     if (engravingInput) {
-        engravingInput.addEventListener('input', drawLayers);
+        engravingInput.addEventListener('input', () => {
+            console.log('Engraving input changed');
+            drawLayers();
+        });
     }
 
-    downloadBtn.addEventListener('click', () => {
+    const qrcodeInput = document.getElementById('qrcodeInput');
+    if (qrcodeInput) {
+        console.log('Adding QR code input listener');
+        qrcodeInput.addEventListener('input', () => {
+            console.log('QR code input changed:', qrcodeInput.value);
+            drawLayers();
+        });
+    }
+
+    downloadBtn.addEventListener('click', async () => {
         const engravingInput = document.getElementById('engravingInput');
+        const qrcodeInput = document.getElementById('qrcodeInput');
         const engraving = engravingInput ? engravingInput.value.slice(0, 20) : '';
+        const qrcode = qrcodeInput ? qrcodeInput.value : '';
+
+        // Build query parameters
+        const params = new URLSearchParams();
+        window.layerData.forEach(layer => {
+            if (!layer.name.endsWith('-AND')) {
+                const slider = document.getElementById(`layer-${layer.level}`);
+                if (slider) {
+                    params.append(layer.name, slider.value);
+                }
+            }
+        });
+        if (engraving) params.append('engraving', engraving);
+        if (qrcode) params.append('qrcode', qrcode);
+
+        const collection = getCollection();
+        if (collection) params.append('collection', collection);
+
+        // Generate image with server
+        const response = await fetch(`/api/composite-image?${params.toString()}`);
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+
+        // Download the image
         const link = document.createElement('a');
         link.download = 'layered-image.png';
-        link.href = canvas.toDataURL('image/png');
+        link.href = url;
         link.click();
+
+        // Clean up
+        URL.revokeObjectURL(url);
     });
 };
 
