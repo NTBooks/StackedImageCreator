@@ -173,9 +173,10 @@ const drawLayers = async () => {
     const qrcodeInput = document.getElementById('qrcodeInput');
     if (qrcodeInput && qrcodeInput.value) {
         await drawQRCode();
-    } else {
-        drawEngraving();
     }
+
+    drawEngraving();
+
 };
 
 // Update layer value display
