@@ -102,6 +102,10 @@ app.use('/assets', express.static(path.join('assets', "")));
 // Utility function for XOR compositing
 async function compositeLayersWithXOR(layers, imagesToComposite, collection) {
     let base = imagesToComposite[0];
+    const baseMetadata = await sharp(base).metadata();
+    const baseWidth = baseMetadata.width;
+    const baseHeight = baseMetadata.height;
+
     let overlays = [];
     let i = 1;
     while (i < imagesToComposite.length) {
@@ -109,12 +113,8 @@ async function compositeLayersWithXOR(layers, imagesToComposite, collection) {
         const prevLayer = layers[i - 1];
         if (prevLayer && prevLayer.name.endsWith('-XOR')) {
             // Apply mask: prevLayer is the mask, currentLayer is the image to mask
-            const maskPath = imagesToComposite[i - 1];
-            const imagePath = imagesToComposite[i];
-            const [imageBuffer, maskBuffer] = await Promise.all([
-                require('fs').promises.readFile(imagePath),
-                require('fs').promises.readFile(maskPath)
-            ]);
+            const maskBuffer = imagesToComposite[i - 1];
+            const imageBuffer = imagesToComposite[i];
             const maskedBuffer = await sharp(imageBuffer)
                 .joinChannel(
                     await sharp(maskBuffer).ensureAlpha().extractChannel('alpha').toBuffer()
@@ -127,11 +127,14 @@ async function compositeLayersWithXOR(layers, imagesToComposite, collection) {
             const xorRoot = prevLayer.name.replace('-XOR', '');
             const andLayer = layers.find(l => l.name === xorRoot + '-AND');
             if (andLayer) {
-                // Use the index of the XOR mask (prevLayer) in its images array
-                const xorIdx = prevLayer.images.findIndex(imgObj => path.basename(maskPath).includes(`_${imgObj.number}.png`));
-                if (xorIdx !== -1 && andLayer.images[xorIdx]) {
+                // Use the same index as the XOR mask
+                const xorIdx = i - 1;
+                if (andLayer.images[xorIdx]) {
                     const andPath = path.join(__dirname, 'assets', `${collection}/L${andLayer.level}_${andLayer.name}_${xorIdx + 1}.png`);
-                    overlays.push({ input: andPath });
+                    const andBuffer = await sharp(andPath)
+                        .resize(baseWidth, baseHeight)
+                        .toBuffer();
+                    overlays.push({ input: andBuffer });
                 }
             }
             i += 2;
@@ -147,12 +150,17 @@ async function compositeLayersWithXOR(layers, imagesToComposite, collection) {
 async function addEngravingToBuffer(buffer, engraving) {
     if (!engraving) return buffer;
     const text = engraving.slice(0, 20);
-    const width = 1080;
-    const height = 1080;
+
+    // Get input image dimensions
+    const metadata = await sharp(buffer).metadata();
+    const width = metadata.width;
+    const height = metadata.height;
+
     const boxWidth = Math.floor(width * 0.7);
     const boxHeight = 70;
     const boxX = Math.floor((width - boxWidth) / 2);
     const boxY = height - boxHeight - 40;
+
     // Create SVG overlay (centered, fixed-width, white text)
     const svg = `
     <svg width='${width}' height='${height}'>
@@ -199,7 +207,7 @@ async function addQRCodeToBuffer(buffer, url) {
         const height = metadata.height;
 
         // Calculate QR code size (30% of the smaller dimension)
-        const qrSize = Math.min(width, height) * 0.3;
+        const qrSize = Math.floor(Math.min(width, height) * 0.3);
 
         // Resize QR code
         const resizedQR = await sharp(qrBuffer)
@@ -271,6 +279,8 @@ app.get('/api/composite-image', async (req, res) => {
     try {
         const collection = req.query.collection || DEFAULT_COLLECTION;
         const layers = await getLayers(collection);
+
+        console.log(req.url);
         // Create a case-insensitive map of query params
         const selections = {};
         for (const key in req.query) {
@@ -278,6 +288,14 @@ app.get('/api/composite-image', async (req, res) => {
                 selections[key.toLowerCase()] = req.query[key];
             }
         }
+
+        // Get first layer dimensions
+        const firstLayer = layers[0];
+        const firstImagePath = path.join(__dirname, 'assets', `${collection}/L${firstLayer.level}_${firstLayer.name}_1.png`);
+        const firstImageMetadata = await sharp(firstImagePath).metadata();
+        const width = Math.floor(firstImageMetadata.width);
+        const height = Math.floor(firstImageMetadata.height);
+
         const imagesToComposite = [];
         for (const layer of layers) {
             // Skip emblem layer if QR code is provided
@@ -288,10 +306,20 @@ app.get('/api/composite-image', async (req, res) => {
             const idxStr = selections[layer.name.toLowerCase()];
             const idxNum = typeof idxStr !== 'undefined' ? parseInt(idxStr, 10) : undefined;
             if (typeof idxNum === 'number' && !isNaN(idxNum) && layer.images[idxNum]) {
-                imagesToComposite.push(path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_${idxNum + 1}.png`));
+                const imagePath = path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_${idxNum + 1}.png`);
+                // Resize image to match first layer dimensions
+                const resizedBuffer = await sharp(imagePath)
+                    .resize(width, height)
+                    .toBuffer();
+                imagesToComposite.push(resizedBuffer);
             } else {
                 // fallback to first image if not specified or invalid
-                imagesToComposite.push(path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_1.png`));
+                const imagePath = path.join(__dirname, 'assets', `${collection}/L${layer.level}_${layer.name}_1.png`);
+                // Resize image to match first layer dimensions
+                const resizedBuffer = await sharp(imagePath)
+                    .resize(width, height)
+                    .toBuffer();
+                imagesToComposite.push(resizedBuffer);
             }
         }
         let buffer = await compositeLayersWithXOR(layers, imagesToComposite, collection);

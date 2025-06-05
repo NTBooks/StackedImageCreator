@@ -7,9 +7,21 @@ const sliders = document.querySelectorAll('.layer-slider');
 const loadedImages = new Map();
 let baseImage = null;
 
-// Set canvas size (adjust as needed)
-canvas.width = 800;
-canvas.height = 800;
+// Set canvas size based on first layer
+const setCanvasSize = async () => {
+    if (window.layerData && window.layerData.length > 0) {
+        const firstLayer = window.layerData[0];
+        const firstImage = new Image();
+        firstImage.src = firstLayer.images[0].path;
+        await new Promise((resolve) => {
+            firstImage.onload = () => {
+                canvas.width = firstImage.width;
+                canvas.height = firstImage.height;
+                resolve();
+            };
+        });
+    }
+};
 
 // Load all images
 const loadImages = async () => {
@@ -122,8 +134,6 @@ const drawLayers = async () => {
             continue; // skip -AND layers in main loop
         }
 
-
-
         const slider = document.getElementById(`layer-${layer.level}`);
         const value = parseInt(slider.value);
         const img = loadedImages.get(`${layer.level}_${value}`);
@@ -171,7 +181,6 @@ const drawLayers = async () => {
     }
 
     drawEngraving();
-
 };
 
 // Update layer value display
@@ -182,6 +191,7 @@ const updateLayerValue = (slider) => {
 
 // Initialize
 const init = async () => {
+    await setCanvasSize();
     await loadImages();
     drawLayers();
 
