@@ -7,6 +7,9 @@ const sliders = document.querySelectorAll('.layer-slider');
 const loadedImages = new Map();
 let baseImage = null;
 
+// Store the current QR code draw operation
+let currentQRDraw = null;
+
 // Set canvas size based on first layer
 const setCanvasSize = async () => {
     if (window.layerData && window.layerData.length > 0) {
@@ -49,21 +52,30 @@ const loadImages = async () => {
 const drawEngraving = () => {
     const engravingInput = document.getElementById('engravingInput');
     if (!engravingInput) return;
-    const text = engravingInput.value.slice(0, 20);
+    const text = engravingInput.value.slice(0, 40);
     if (!text) return;
-    // Box dimensions
-    const boxWidth = canvas.width * 0.7;
-    const boxHeight = 70;
+
+    // Set up text measurement
+    ctx.font = 'bold 48px monospace';
+    const textMetrics = ctx.measureText(text);
+    const textWidth = textMetrics.width;
+    const textHeight = 48; // Approximate height for monospace font
+
+    // Box dimensions with padding
+    const padding = 20;
+    const boxWidth = Math.max(textWidth + (padding * 2), canvas.width * 0.7);
+    const boxHeight = textHeight + (padding * 2);
     const boxX = (canvas.width - boxWidth) / 2;
     const boxY = canvas.height - boxHeight - 40;
+
     // Draw semi-transparent black box
     ctx.save();
     ctx.globalAlpha = 0.5;
     ctx.fillStyle = '#000';
     ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
     ctx.globalAlpha = 1.0;
+
     // Draw white fixed-width text
-    ctx.font = 'bold 48px monospace';
     ctx.fillStyle = '#fff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -77,11 +89,23 @@ const drawQRCode = async () => {
     if (!qrcodeInput || !qrcodeInput.value) return;
 
     try {
+        // Cancel any existing QR code draw operation
+        if (currentQRDraw) {
+            currentQRDraw.cancelled = true;
+        }
+
+        // Create new draw operation
+        currentQRDraw = { cancelled: false };
+        const thisDraw = currentQRDraw;
+
         // Get QR code from server
         const response = await fetch(`/api/qrcode?url=${encodeURIComponent(qrcodeInput.value)}`);
         if (!response.ok) {
             throw new Error('Failed to generate QR code');
         }
+
+        // Check if this draw was cancelled
+        if (thisDraw.cancelled) return;
 
         const blob = await response.blob();
         const qrImage = new Image();
@@ -91,6 +115,12 @@ const drawQRCode = async () => {
         await new Promise((resolve) => {
             qrImage.onload = resolve;
         });
+
+        // Check if this draw was cancelled
+        if (thisDraw.cancelled) {
+            URL.revokeObjectURL(qrImage.src);
+            return;
+        }
 
         // Calculate QR code size (30% of the smaller dimension)
         const qrSize = Math.min(canvas.width, canvas.height) * 0.3;
@@ -119,6 +149,26 @@ const drawQRCode = async () => {
     } catch (error) {
         console.error('Error drawing QR code:', error);
     }
+};
+
+// Draw entropy layer (3 random semi-transparent white pixels)
+const drawEntropyLayer = () => {
+    ctx.save();
+    ctx.globalAlpha = 0.03;
+    ctx.fillStyle = '#FFFFFF';
+
+    // Calculate middle 50% boundaries
+    const xStart = Math.floor(canvas.width * 0.25);
+    const xEnd = Math.floor(canvas.width * 0.75);
+    const yStart = Math.floor(canvas.height * 0.25);
+    const yEnd = Math.floor(canvas.height * 0.75);
+
+    for (let i = 0; i < 3; i++) {
+        const x = Math.floor(xStart + Math.random() * (xEnd - xStart));
+        const y = Math.floor(yStart + Math.random() * (yEnd - yStart));
+        ctx.fillRect(x, y, 1, 1);
+    }
+    ctx.restore();
 };
 
 // Draw all layers
@@ -181,6 +231,9 @@ const drawLayers = async () => {
     }
 
     drawEngraving();
+
+    // Add entropy layer as the final step
+    drawEntropyLayer();
 };
 
 // Update layer value display

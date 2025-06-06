@@ -149,15 +149,23 @@ async function compositeLayersWithXOR(layers, imagesToComposite, collection) {
 // Utility to overlay engraving text using Sharp
 async function addEngravingToBuffer(buffer, engraving) {
     if (!engraving) return buffer;
-    const text = engraving.slice(0, 20);
+    const text = engraving.slice(0, 40);
 
     // Get input image dimensions
     const metadata = await sharp(buffer).metadata();
     const width = metadata.width;
     const height = metadata.height;
 
-    const boxWidth = Math.floor(width * 0.7);
-    const boxHeight = 70;
+    // Calculate text dimensions (approximate for monospace font)
+    const fontSize = 48;
+    const charWidth = fontSize * 0.6; // Approximate width for monospace characters
+    const textWidth = text.length * charWidth;
+    const textHeight = fontSize;
+
+    // Box dimensions with padding
+    const padding = 20;
+    const boxWidth = Math.max(textWidth + (padding * 2), width * 0.7);
+    const boxHeight = textHeight + (padding * 2);
     const boxX = Math.floor((width - boxWidth) / 2);
     const boxY = height - boxHeight - 40;
 
@@ -169,7 +177,7 @@ async function addEngravingToBuffer(buffer, engraving) {
         x='${width / 2}'
         y='${boxY + boxHeight / 2}'
         font-family='Menlo,Consolas,Monaco,Liberation Mono,Courier,monospace'
-        font-size='48'
+        font-size='${fontSize}'
         fill='white'
         text-anchor='middle'
         dominant-baseline='middle'
@@ -238,6 +246,35 @@ async function addQRCodeToBuffer(buffer, url) {
         console.error('Error generating QR code:', error);
         throw error;
     }
+}
+
+// Utility to add entropy layer (3 random semi-transparent white pixels)
+async function addEntropyLayer(buffer) {
+    const metadata = await sharp(buffer).metadata();
+    const width = metadata.width;
+    const height = metadata.height;
+
+    // Calculate middle 50% boundaries
+    const xStart = Math.floor(width * 0.25);
+    const xEnd = Math.floor(width * 0.75);
+    const yStart = Math.floor(height * 0.25);
+    const yEnd = Math.floor(height * 0.75);
+
+    // Create SVG with 3 random white pixels at 3% opacity
+    const svg = `
+    <svg width='${width}' height='${height}'>
+        ${Array.from({ length: 3 }, () => {
+        const x = Math.floor(xStart + Math.random() * (xEnd - xStart));
+        const y = Math.floor(yStart + Math.random() * (yEnd - yStart));
+        return `<rect x='${x}' y='${y}' width='1' height='1' fill='white' fill-opacity='0.03'/>`;
+    }).join('\n')}
+    </svg>
+    `;
+
+    return sharp(buffer)
+        .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+        .png()
+        .toBuffer();
 }
 
 // Main route
@@ -329,6 +366,8 @@ app.get('/api/composite-image', async (req, res) => {
         if (req.query.qrcode) {
             buffer = await addQRCodeToBuffer(buffer, req.query.qrcode);
         }
+        // Add entropy layer as the final step
+        buffer = await addEntropyLayer(buffer);
         res.set('Content-Type', 'image/png');
         res.send(buffer);
     } catch (error) {
